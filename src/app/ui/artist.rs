@@ -19,6 +19,9 @@ use crate::{
     theme::{self, AppTheme},
 };
 
+/// How many popular rows fit before the list scrolls inside its own viewport.
+const POPULAR_TRACK_ROWS: usize = 8;
+
 /// The artist page: header (picture, name, stats), then one section per row,
 /// each with its own "Provided by" provider picker.
 fn section_kind_label(kind: ArtistSectionKind, tr: &crate::i18n::Strings) -> &str {
@@ -334,7 +337,13 @@ fn section_body<'a>(
                 if tracks.is_empty() {
                     empty_state(player.strings.nothing_here)
                 } else {
-                    view_track_list(tracks.as_slice(), player, pane, 0)
+                    // Bounded like Home's quick picks, so a long popular list
+                    // scrolls inside its own viewport instead of stretching
+                    // the page.
+                    let rows = tracks.len().min(POPULAR_TRACK_ROWS);
+                    Container::new(view_track_list(tracks.as_slice(), player, pane, 0))
+                        .height(Length::Fixed(theme::ROW_HEIGHT * rows as f32))
+                        .into()
                 }
             }
             LoadState::Failed(e) => {

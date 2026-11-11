@@ -13,6 +13,7 @@ auto-generated compare link below it.
 ### Changed
 
 - "Clear cache" works for all selected tracks.
+- "Most popular songs" section is of fixed height and scrollable.
 
 ## [1.5.5] - 2026-11-09
 

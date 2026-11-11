@@ -1072,7 +1072,7 @@ mod tests {
         assert_eq!((unmeasured.x, unmeasured.y), (10.0, 20.0));
     }
 
-    /// An artist page scrolls as a whole, and its popular-tracks list rides
+    /// An artist page scrolls as a whole, and its popular-tracks list scrolls
     /// inside that page: the row's point arrives shifted by both offsets.
     #[test]
     fn a_popular_list_artist_section_subtracts_the_page_scroll() {
@@ -1102,10 +1102,16 @@ mod tests {
             provider: ProviderId::YouTube,
             url: String::new(),
         });
-        // The popular list itself never scrolls, so its own offset is zero.
-        p.bounds.tracks.insert(pane, ListGeometry::default());
+        // The popular list has its own scroll offset on top of the page's.
+        p.bounds.tracks.insert(
+            pane,
+            ListGeometry {
+                translation_y: 96.0,
+                ..ListGeometry::default()
+            },
+        );
         let anchored = p.window_point(pane, Point::new(300.0, 900.0));
-        assert_eq!((anchored.x, anchored.y), (300.0, 420.0));
+        assert_eq!((anchored.x, anchored.y), (300.0, 324.0));
     }
 
     /// A card's own view, as the three card hosts build it.
