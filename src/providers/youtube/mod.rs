@@ -38,6 +38,8 @@ struct YTDLPSearchResult {
     duration: u32,
     channel: String,
     #[serde(default)]
+    channel_id: Option<String>,
+    #[serde(default)]
     view_count: Option<u64>,
 }
 
@@ -575,7 +577,7 @@ pub fn fetch_artist_page(id: &str, kinds: &[ArtistDataKind]) -> Result<ArtistPag
     } else {
         Vec::new()
     };
-    let mut page = artist_page_from(id, &artist, songs, ArtistDataKind::Playlists.wanted(kinds));
+    let mut page = artist_page_from(id, &artist, songs, kinds);
     filter_artist_page(&mut page, kinds);
     Ok(page)
 }
@@ -584,7 +586,7 @@ fn artist_page_from(
     id: &str,
     artist: &MusicArtistPage,
     songs: Vec<Track>,
-    fetch_playlist_shelves: bool,
+    kinds: &[ArtistDataKind],
 ) -> ArtistPage {
     let mut header = ArtistHeader {
         image: artist.thumbnail.clone().unwrap_or_default(),
@@ -602,7 +604,6 @@ fn artist_page_from(
             .push(("YouTube Subscribers".to_string(), subscribers));
     }
 
-    let popular: Vec<Track> = songs;
     let mut albums: Vec<ArtistAlbumCard> = Vec::new();
     for (items, badge) in [(&artist.albums, "Album"), (&artist.singles, "Single")] {
         for item in items {
@@ -621,18 +622,29 @@ fn artist_page_from(
         }
     }
     // `MusicArtistPage::featured_on` is never populated by the crate's parser,
-    // so the playlist shelf comes from the raw artist browse below.
+    // so the playlist shelf comes from the raw artist browse below. The same
+    // response serves as the popular fallback for regular channels, whose
+    // videos live in two-row shelves rather than a "Top songs" shelf.
+    let wants_playlists = ArtistDataKind::Playlists.wanted(kinds);
+    let wants_popular = ArtistDataKind::Popular.wanted(kinds);
+    let needs_raw = wants_playlists || (wants_popular && songs.is_empty());
+    let raw = needs_raw
+        .then(|| {
+            session()
+                .ok()
+                .and_then(|session| run_innertube(raw_browse(session, id.to_string())).ok())
+        })
+        .flatten();
+    let popular = channel_popular(songs, raw.as_ref());
     let mut playlists: Vec<CardData> = Vec::new();
-    if fetch_playlist_shelves {
-        if let Ok(session) = session() {
-            if let Ok(raw) = run_innertube(raw_browse(session, id.to_string())) {
-                for card in raw_artist_playlist_cards(&raw) {
-                    if !playlists
-                        .iter()
-                        .any(|existing| existing.card.id == card.card.id)
-                    {
-                        playlists.push(card);
-                    }
+    if wants_playlists {
+        if let Some(raw) = &raw {
+            for card in raw_artist_playlist_cards(raw) {
+                if !playlists
+                    .iter()
+                    .any(|existing| existing.card.id == card.card.id)
+                {
+                    playlists.push(card);
                 }
             }
         }
@@ -660,6 +672,17 @@ fn artist_page_from(
         playlists,
         related,
     }
+}
+
+/// Popular rows for an artist page: the crate's parsed "Top songs" shelf when
+/// there is one, otherwise the video cards of a regular channel page (those
+/// pages have a `musicVisualHeaderRenderer` and no songs shelf).
+fn channel_popular(songs: Vec<Track>, raw: Option<&Value>) -> Vec<Track> {
+    if !songs.is_empty() {
+        return songs;
+    }
+    raw.filter(|raw| raw.pointer("/header/musicVisualHeaderRenderer").is_some())
+        .map_or_else(Vec::new, |raw| raw_two_row_tracks(raw, &[]))
 }
 
 fn user_channel_page(id: &str) -> Result<Option<ArtistPage>> {
@@ -898,6 +921,26 @@ pub fn search_more(query: &str, offset: usize) -> Result<Vec<Track>> {
     search_ytdlp(query, offset, SEARCH_PAGE_SIZE)
 }
 
+fn track_from_ytdlp(item: YTDLPSearchResult) -> Option<Track> {
+    if !is_video_id(&item.id) {
+        return None;
+    }
+    let artists = if item.channel.is_empty() {
+        Vec::new()
+    } else {
+        vec![(item.channel, item.channel_id.unwrap_or_default())]
+    };
+    Some(build_track(
+        &item.id,
+        item.title,
+        artists,
+        None,
+        item.duration,
+        default_thumbnail(&item.id),
+        item.view_count.unwrap_or(0),
+    ))
+}
+
 // yt-dlp search pass. The `ytsearchN:` prefix requests up to N results;
 // `--playlist-start/--playlist-end` then slice the requested window. (The old
 // `--default-search <music-url> --flat-playlist` combo now resolves to channel
@@ -941,24 +984,11 @@ fn flat_search(query: &str, start: usize, end: usize) -> Result<Vec<Track>> {
             continue;
         }
         if let Ok(item) = serde_json::from_str::<YTDLPSearchResult>(line) {
-            // Skip non-video playlist entries (mixes, channels, etc.).
-            if !is_video_id(&item.id) {
-                continue;
+            // Non-video playlist entries (mixes, channels, etc.) are skipped
+            // inside `track_from_ytdlp`.
+            if let Some(track) = track_from_ytdlp(item) {
+                tracks.push(track);
             }
-            let artists = if item.channel.is_empty() {
-                Vec::new()
-            } else {
-                vec![(item.channel, String::new())]
-            };
-            tracks.push(build_track(
-                &item.id,
-                item.title,
-                artists,
-                None,
-                item.duration,
-                default_thumbnail(&item.id),
-                item.view_count.unwrap_or(0),
-            ));
         }
     }
 
@@ -1282,6 +1312,51 @@ mod tests {
     }
 
     #[test]
+    fn ytdlp_results_keep_the_channel_id() {
+        let item: YTDLPSearchResult = serde_json::from_value(serde_json::json!({
+            "id": "dQw4w9WgXcQ",
+            "title": "T",
+            "channel": "Rick Astley",
+            "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw"
+        }))
+        .unwrap();
+        let track = track_from_ytdlp(item).unwrap();
+        assert_eq!(track.artists, ["Rick Astley"]);
+        assert_eq!(
+            track.artist_target(0),
+            Some(("UCuAXFkgsw1L7xaCfnd5JJOw", ProviderId::YouTube))
+        );
+
+        // Older/partial entries carry no channel id; the artist stays a name.
+        let item: YTDLPSearchResult = serde_json::from_value(serde_json::json!({
+            "id": "dQw4w9WgXcQ",
+            "title": "T",
+            "channel": "Rick Astley"
+        }))
+        .unwrap();
+        let track = track_from_ytdlp(item).unwrap();
+        assert_eq!(track.artists, ["Rick Astley"]);
+        assert_eq!(track.artist_target(0), None);
+    }
+
+    #[test]
+    #[ignore]
+    fn tmp_live_search_ids() {
+        for scope in [SearchScope::Songs, SearchScope::Videos] {
+            let (tracks, _) = search("never gonna give you up", scope, 0).unwrap();
+            eprintln!("scope={scope:?} n={}", tracks.len());
+            for track in tracks.iter().take(5) {
+                eprintln!(
+                    "{} | {:?} | {:?}",
+                    track.title,
+                    track.artists,
+                    track.provider_artist_ids(ProviderId::YouTube)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn normalizes_browse_kinds() {
         assert_eq!(normalize_browse_kind("MPREb_x", ""), "album");
         assert_eq!(normalize_browse_kind("VLPL123", ""), "playlist");
@@ -1296,5 +1371,93 @@ mod tests {
         assert_eq!(radio_id_from_playlist("VLRD123"), Some("RD123"));
         assert_eq!(radio_id_from_playlist("RD123"), Some("RD123"));
         assert_eq!(radio_id_from_playlist("VLPL123"), None);
+    }
+
+    #[test]
+    fn regular_channel_popular_falls_back_to_its_video_cards() {
+        use serde_json::json;
+        let channel = json!({
+            "header": {
+                "musicVisualHeaderRenderer": {
+                    "title": { "runs": [{ "text": "A Channel" }] }
+                }
+            },
+            "contents": {
+                "singleColumnBrowseResultsRenderer": {
+                    "tabs": [{
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [{
+                                        "musicCarouselShelfRenderer": {
+                                            "title": { "runs": [{ "text": "Videos" }] },
+                                            "contents": [{
+                                                "musicTwoRowItemRenderer": {
+                                                    "title": { "runs": [{ "text": "A Video" }] },
+                                                    "subtitle": { "runs": [
+                                                        {
+                                                            "text": "A Channel",
+                                                            "navigationEndpoint": {
+                                                                "browseEndpoint": {
+                                                                    "browseId": "UC_channel",
+                                                                    "browseEndpointContextSupportedConfigs": {
+                                                                        "browseEndpointContextMusicConfig": {
+                                                                            "pageType": "MUSIC_PAGE_TYPE_USER_CHANNEL"
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        },
+                                                        { "text": " • " },
+                                                        { "text": "1M views" }
+                                                    ] },
+                                                    "navigationEndpoint": {
+                                                        "watchEndpoint": { "videoId": "dQw4w9WgXcQ" }
+                                                    },
+                                                    "thumbnailRenderer": {
+                                                        "musicThumbnailRenderer": {
+                                                            "thumbnail": {
+                                                                "thumbnails": [{ "url": "thumb" }]
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }]
+                                        }
+                                    }]
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+        });
+        let popular = channel_popular(Vec::new(), Some(&channel));
+        assert_eq!(popular.len(), 1);
+        assert_eq!(popular[0].title, "A Video");
+        assert_eq!(popular[0].artists, ["A Channel"]);
+        assert_eq!(
+            popular[0].artist_target(0),
+            Some(("UC_channel", ProviderId::YouTube))
+        );
+
+        // An immersive (music artist) page keeps the crate's parsed songs and
+        // gains no video fallback.
+        let artist = json!({
+            "header": { "musicImmersiveHeaderRenderer": {} },
+            "contents": {}
+        });
+        assert!(channel_popular(Vec::new(), Some(&artist)).is_empty());
+        let songs = typed_tracks(&[MusicTrackItem {
+            video_id: "dQw4w9WgXcQ".into(),
+            title: "A Song".into(),
+            ..Default::default()
+        }]);
+        assert_eq!(
+            channel_popular(songs, Some(&channel))
+                .first()
+                .map(|track| track.title.as_str()),
+            Some("A Song")
+        );
     }
 }

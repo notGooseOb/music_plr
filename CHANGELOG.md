@@ -10,6 +10,10 @@ auto-generated compare link below it.
 
 ## [Unreleased]
 
+### Fixed
+
+- If opened regular youtube channel as artist page, "Most popular songs" section is populated with music videos instead of being empty.
+
 ### Changed
 
 - "Clear cache" works for all selected tracks.
