@@ -164,16 +164,33 @@ impl StreamCache {
     }
 
     pub fn remove(&mut self, provider: ProviderId, id: &str) -> bool {
-        let removed_entry = self.index.entries.remove(&provider.cache_key(id));
-        let removed_file = std::fs::remove_file(Self::path_for(provider, id)).is_ok();
-        let had_entry = if let Some(entry) = removed_entry {
-            self.current_total = self.current_total.saturating_sub(entry.size_bytes);
+        self.remove_many([(provider, id)]) > 0
+    }
+
+    /// Remove several cache entries with one index save. Returns how many
+    /// entries or files were removed.
+    pub fn remove_many<'a>(
+        &mut self,
+        entries: impl IntoIterator<Item = (ProviderId, &'a str)>,
+    ) -> usize {
+        let mut removed = 0;
+        let mut index_changed = false;
+        for (provider, id) in entries {
+            let entry = self.index.entries.remove(&provider.cache_key(id));
+            let had_entry = entry.is_some();
+            if let Some(entry) = entry {
+                self.current_total = self.current_total.saturating_sub(entry.size_bytes);
+                index_changed = true;
+            }
+            let removed_file = std::fs::remove_file(Self::path_for(provider, id)).is_ok();
+            if had_entry || removed_file {
+                removed += 1;
+            }
+        }
+        if index_changed {
             self.save();
-            true
-        } else {
-            false
-        };
-        had_entry || removed_file
+        }
+        removed
     }
 
     pub fn cached_providers_for(&self, track: &crate::types::Track) -> Vec<ProviderId> {

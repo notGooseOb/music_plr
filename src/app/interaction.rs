@@ -299,6 +299,10 @@ pub struct ContextMenuState {
     pub is_trashed: bool,
     pub track: Track,
     pub target_indices: Vec<usize>,
+    /// The tracks at `target_indices`, captured when the menu opened, so
+    /// selection-wide entries (clear cache) describe and act on the whole
+    /// selection rather than only the row that was right-clicked.
+    pub target_tracks: Vec<Track>,
     /// The dialog the menu was opened from, restored when it closes. Only the
     /// Edit popup's manual search right-clicks from inside a dialog, which a
     /// single-overlay `Dialog` slot would otherwise destroy. Boxed to break
@@ -307,10 +311,18 @@ pub struct ContextMenuState {
 }
 
 impl ContextMenuState {
-    /// Providers of [`SubmenuKind::ClearCache`]: only those the track carries
-    /// an id for that actually have a stream-cache entry.
+    /// Providers of [`SubmenuKind::ClearCache`]: every provider with a
+    /// stream-cache entry for at least one track in the selection.
     pub fn cached_providers(&self, cache: &StreamCache) -> Vec<crate::providers::ProviderId> {
-        cache.cached_providers_for(&self.track)
+        let mut providers = Vec::new();
+        for track in &self.target_tracks {
+            for provider in cache.cached_providers_for(track) {
+                if !providers.contains(&provider) {
+                    providers.push(provider);
+                }
+            }
+        }
+        providers
     }
 
     /// Providers listed in `kind`'s submenu for this menu. `ClearCache` is

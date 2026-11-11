@@ -8,6 +8,12 @@ workflow extracts the section matching the tag and prepends it to the release
 body. `generate_release_notes` stays on, so GitHub still appends the
 auto-generated compare link below it.
 
+## [Unreleased]
+
+### Changed
+
+- "Clear cache" works for all selected tracks.
+
 ## [1.5.5] - 2026-11-09
 
 ### Fixed

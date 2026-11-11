@@ -720,6 +720,7 @@ impl MusicPlayer {
         } else {
             vec![index]
         };
+        let target_tracks = self.get_tracks_at(&target_indices, pane);
 
         // A menu can be opened from inside a dialog (the Edit popup's
         // manual search), which the single-overlay slot would otherwise
@@ -730,6 +731,7 @@ impl MusicPlayer {
                 anchor: crate::app::interaction::MenuAnchor::at(point),
                 pos,
                 target_indices,
+                target_tracks,
                 in_playlist,
                 is_trashed: self.is_trashed(&track),
                 track,
@@ -972,28 +974,36 @@ impl MusicPlayer {
         self.start_radio_provider(pane, provider, &menu.track, true)
     }
 
-    /// Clear the stream cache for the context menu's track on `provider`.
+    /// Clear the stream cache for every selected track on `provider`.
     pub fn handle_context_menu_clear_cache(&mut self, provider: ProviderId) {
         let Some(menu) = self.take_context_menu() else {
             return;
         };
-        if let Some(id) = menu.track.provider_id(provider).map(str::to_string) {
-            if self.stream_cache.remove(provider, &id) {
-                self.notify((self.strings.cache_cleared_for)(
-                    &self.strings.provider(provider),
-                ));
-            }
-        }
+        let cleared = self.stream_cache.remove_many(
+            menu.target_tracks
+                .iter()
+                .filter_map(|track| track.provider_id(provider).map(|id| (provider, id))),
+        );
+        self.notify((self.strings.cache_cleared_for)(
+            cleared,
+            &self.strings.provider(provider),
+        ));
     }
 
-    /// Clear the stream cache for the context menu's track on its current
-    /// (source) provider: the direct click on the "Clear cache" parent row.
+    /// Clear the stream cache on the selected tracks' own source providers:
+    /// the direct click on the "Clear cache" parent row. A mixed-source
+    /// selection clears each track's source cache.
     pub fn handle_context_menu_clear_cache_current(&mut self) {
-        let Some(Dialog::ContextMenu(menu)) = &self.dialog else {
+        let Some(menu) = self.take_context_menu() else {
             return;
         };
-        let provider = menu.track.source;
-        self.handle_context_menu_clear_cache(provider);
+        let cleared = self.stream_cache.remove_many(
+            menu.target_tracks
+                .iter()
+                .filter(|track| track.source != ProviderId::Local)
+                .filter_map(|track| track.provider_id(track.source).map(|id| (track.source, id))),
+        );
+        self.notify((self.strings.cache_cleared_n)(cleared));
     }
 
     /// Open the context menu's track page in the desktop's default browser.

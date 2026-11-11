@@ -349,7 +349,8 @@ pub struct Strings {
     pub error_tool_missing: &'static str,
     pub error_parse: &'static str,
     pub error_other: &'static str,
-    pub cache_cleared_for: fn(&str) -> String,
+    pub cache_cleared_n: fn(usize) -> String,
+    pub cache_cleared_for: fn(usize, &str) -> String,
     pub ctx_add_to_queue_n: fn(usize) -> String,
     pub ctx_add_to_playlist_n: fn(usize) -> String,
     pub ctx_download_n: fn(usize) -> String,
@@ -701,7 +702,7 @@ mod tests {
         ];
         for &lang in INFLECTING {
             let s = lang.strings();
-            let builds: [(&str, Counted); 13] = [
+            let builds: [(&str, Counted); 14] = [
                 ("added", s.added),
                 ("removed_n", s.removed_n),
                 ("added_local", s.added_local),
@@ -715,6 +716,7 @@ mod tests {
                 ("ctx_add_to_trashbin_n", s.ctx_add_to_trashbin_n),
                 ("ctx_remove_from_trashbin_n", s.ctx_remove_from_trashbin_n),
                 ("import_playlists_imported", s.import_playlists_imported),
+                ("cache_cleared_n", s.cache_cleared_n),
             ];
             for (field, build) in builds {
                 assert!(
@@ -722,10 +724,11 @@ mod tests {
                     "{lang:?}: {field} does not use a plural form"
                 );
             }
-            let into_builds: [(&str, CountedInto); 3] = [
+            let into_builds: [(&str, CountedInto); 4] = [
                 ("added_to", s.added_to),
                 ("removed_from", s.removed_from),
                 ("pasted_into", s.pasted_into),
+                ("cache_cleared_for", s.cache_cleared_for),
             ];
             for (field, build) in into_builds {
                 assert!(
